@@ -1,0 +1,242 @@
+---
+title: 'Final Project'
+author: "William Kawira"
+date: "2025-04-10"
+output:
+  pdf_document:
+    citation_package: natbib
+  html_document:
+    toc: true
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(pROC)
+library(rstan)
+library(tidyverse)
+library(glmnet)
+```
+
+### Intoduction
+
+#### * Dataset
+
+The dataset used in this project is obtained from https://hbiostat.org/data/. This data is originally collected to develop a screening program for female 
+relatives of boys with DMD. The initial program's goal was to inform a woman of her chances of being a carrier based on serum markers as well as her family 
+pedigree. This data consists of mostly real and integer variables with some boolean variables.The variable included in this data set are as such :
+
+- Hospital ID (hospid)
+- Age in years (age)
+- Date of study (sdate)
+- Creatine Kinase (ck), real values which represent the level of creatine kinase, an enzyme located in skeletal and heart muscles which plays a role in energy production.
+- Hemopexin (h), real values representing the level of hemopexin a patient which is a plasma glycoprotein which plays a role in transport of heme in blood.
+- Pyruvate Kinase (pk), real values representing level of pyruvate kinase, an enzyme which plays a crucial role in glycolisis, transforming glucose into ATP.
+- Lactate Dehydroginase (ld), real values which represent the level of lactate dehydroginase, an enzyme which plays a role in energy production specifically anaerobic metabolism.
+- Carrier of DMD (carrier), boolean variable indicating whether the the patient is a carries of DMD or not.
+- Observation number within patient (obsno), integer indicating the number of times the patient has been observed in the institute.
+
+#### * Literature Review and Problem Formulation
+
+Duchenne muscular dystrophy is a form of inherited muscular dystrophy which does not exhibit prediction for any race or ethnic group. This disease affects primarily male as the 
+disease occured due to mutations in the X genes. According to the the John Hopkins Medicine website, this disease primarily occurs on young boys withing the age of 3 - 6 years old
+[hopkinsDMD]. The symptoms of this disease includes mobility issues, facial weakness, and in some cases heart problems. The website also suggested some ways of diagnosing DMD such 
+as, blood tests, muscle biopsy, EMG, or EKG. It is stated that the first line of treatment for this disease is corticosteroids, which has been proven to decrease the rate of 
+muscle deterioration of DMD patients. 
+
+A research done on 2016 by van Westering, Betts, and Wood further explores the development of therapeutic strategies for Duchenne muscular dystrophy, emphasizing the role of 
+corticosteroids in delaying disease progression and the potential of gene-targeted treatments in clinical trials [@vanWestering2016]. This research indicates the existence 
+of levels to this disease which are BMD (Becker muscular dystrophy) which is a milder form of DMD. As this research then dive deeper on the topic of ways of diagnosing this
+disease through gene analysis, specifically on the analysis of the DMD genes which are responsible for the creation of dystrophin protein. In this project I would do an 
+diagnosis approach not using genes analysis but instead by determining carrier of this disease by using the provided stats such as levels of the provided enzyme, and age.
+
+The main problem of this project would be creating a model to detect this female carriers of this disease using the provided data. The model created will be a logistic 
+regression based of the bayesian approach. Based of this bayesian regression I would then compare this model to another model with a frequentist approach. considering that 
+there may be an unfair advantage if the model is not well specified for the bayesian model, I would first do the frequentist regression to select on the best variables to
+use, and then create a good prior on these variables based of the provided dataset. 
+
+### Methodology
+
+#### 1. Preparing and Spliting Data
+
+```{r, echo=TRUE, fig.height=4}
+set.seed(1332)
+
+# Read Data
+df <- read.csv("dmd.csv")
+df$carrier <- as.factor(df$carrier)
+df <- df[ , c("age", "ck", "h", "pk", "ld", "carrier")]
+df <- na.omit(df)
+
+
+# 0.8 Test Train split
+n <- nrow(df)
+train_index <- sample(1:n, size = 0.8 * n)  # 80% for training
+train <- df[train_index, ]
+test  <- df[-train_index, ]
+
+x_train <- as.matrix(train[, c("age", "ck", "h", "pk", "ld")])
+y_train <- train$carrier
+y_train <- as.numeric(y_train) - 1
+
+#check for correlation
+cor(x_train)
+
+#reduce high correlation variables
+x_train <- x_train[,c("age", "ck", "h", "ld")]
+```
+
+The correlation shows that the only high correlation variables are ck and pk, therefore I have decided to remove pk.
+
+#### 2. Frequentist Approach Logistic Regression
+
+```{r, echo=TRUE, fig.height=4}
+freq_model <- glm(carrier ~ age + ck + h + ld, data = train, family = "binomial")
+summary(freq_model)
+freq_pred_probs <- predict(freq_model, newdata = test, type = "response")
+
+# Convert probabilities to class labels (threshold 0.5)
+freq_pred_class <- ifelse(freq_pred_probs > 0.5, 1, 0)
+true_class <- as.numeric(test$carrier) - 1 
+
+# Accuracy
+accuracy <- mean(freq_pred_class == true_class)
+print(paste("Test set accuracy:", accuracy))
+```
+
+From this coefficient we obtain the logit(P(Carrier = 1)) = -17.792 +  0.145*age + 0.047*ck + 0.083*h + 0.0056*ld.
+
+```{r, echo=TRUE, fig.height=4}
+#create lasso model
+lasso_model <- glmnet(x_train, y_train, family = "binomial", alpha = 1)
+plot(lasso_model, xvar = "lambda")
+
+#create cross validate the lasso model to check for SD
+cv_lasso <- cv.glmnet(x_train, y_train, family = "binomial", alpha = 1)
+plot(cv_lasso)
+cv_lasso$lambda.1se
+# Best lambda from cross-validation
+se_lambda <- cv_lasso$lambda.1se
+print(paste("Best lambda:", se_lambda))
+```
+
+The two plot indicates that we will still be using all 4 variables even when using the 1 SE rule for lambda selection
+which promotes simplicity. This can be proved as the selected log lambda is -0.02277 , and when cross checked with 
+the lasso model plot it still falls in the 4 variable region. Therefore with this evidence we can say that none of the
+variable used in the model is redundant.
+
+```{r, echo=TRUE, fig.height=4}
+# Fit the final Lasso model using the 1 SE lambda
+final_lasso_model <- glmnet(x_train, y_train, family = "binomial", alpha = 1, lambda = se_lambda)
+coef(final_lasso_model)
+```
+
+From this coefficient we obtain the logit(P(Carrier = 1)) = -11.119 +  0.105*age + 0.01*ck + 0.047*h + 0.011*ld when using
+the LASSO method.
+
+```{r, echo=TRUE, fig.height=4}
+# Set up the test dataset
+x_test <- as.matrix(test[, c("age", "ck", "h", "ld")])
+y_test <- as.numeric(test$carrier) - 1
+
+# Predict probabilities for the test set
+pred_probs <- predict(final_lasso_model, newx = x_test, type = "response")
+
+# Convert probabilities to class predictions (threshold = 0.5)
+pred_class <- ifelse(pred_probs > 0.5, 1, 0)
+
+# Evaluate accuracy
+accuracy_2 <- mean(pred_class == y_test)
+print(paste("Test set accuracy:", accuracy_2))
+```
+
+#### 3. Bayesian Approach Logistic Regression
+
+
+```{r, echo=TRUE, fig.height=4}
+#data preparation
+X_bay <- as.matrix(train[, c("age", "ck", "h", "ld")])
+y_bay <- as.numeric(train$carrier) - 1
+
+stan_data <- list(
+  N = nrow(X_bay),
+  K = ncol(X_bay),
+  X = X_bay,
+  y = y_bay
+)
+```
+
+```{r, echo=TRUE, fig.height=4}
+#compute sample posterior
+fit <- stan(file = "model.stan",
+            data = stan_data,
+            iter = 2000,
+            chains = 5,
+            seed = 1332)
+print(fit, pars = c("alpha", "beta"), probs = c(0.025, 0.5, 0.975))
+pairs(fit)
+```
+
+Using the stan() method with the naive prior (Norm (0, 5) for all coefficient and intercept), we obain a posterior model
+as such logit(P(Carrier = 1)) = -14.36 +  0.13*age + 0.04*ck + 0.06*h + 0.01*ld
+```{r, echo=TRUE, fig.height=4}
+#extract coefficients
+posterior_samples <- rstan::extract(fit)
+
+# Predict using posterior samples
+alpha_samples <- posterior_samples$alpha
+beta_samples <- posterior_samples$beta
+
+# Compute predicted probabilities (posterior predictive mean)
+pred_probs <- sapply(1:length(alpha_samples), function(i) {
+  plogis(alpha_samples[i] + x_test %*% beta_samples[i, ])
+})
+
+# Average across posterior samples
+mean_probs <- rowMeans(pred_probs)
+
+# Convert to class prediction
+pred_class <- ifelse(mean_probs > 0.5, 1, 0)
+y_test <- as.numeric(test$carrier) - 1
+
+# Accuracy
+accuracy <- mean(pred_class == y_test)
+print(paste("STAN test set accuracy:", accuracy))
+
+# Traceplot 
+traceplot(fit, pars = "beta[1]")
+traceplot(fit, pars = "beta[2]")
+traceplot(fit, pars = "beta[3]")
+traceplot(fit, pars = "beta[4]")
+traceplot(fit, pars = "alpha")
+```
+
+#### Model Diagnostics
+
+```{r, echo=TRUE, fig.height=4}
+pred_class_freq <- ifelse(freq_pred_probs > 0.5, 1, 0)
+pred_class_bayes <- ifelse(mean_probs > 0.5, 1, 0)
+
+conf_matrix_freq <- table(Predicted = pred_class_freq, Actual = y_test)
+print(conf_matrix_freq)
+
+conf_matrix_bayes <- table(Predicted = pred_class_bayes, Actual = y_test)
+print(conf_matrix_bayes)
+
+roc_freq <- roc(y_test, freq_pred_probs)
+roc_bayes <- roc(y_test, mean_probs)
+
+# Plot ROC curves
+plot(roc_freq, col = "blue", main = "ROC Curve Comparison", lwd=2)
+lines(roc_bayes, col = "red", lwd=2)
+legend("bottomright", legend = c("Frequentist", "Bayesian"),
+       col = c("blue", "red"), lwd = 2)
+
+# AUC values
+auc_freq <- auc(roc_freq)
+auc_bayes <- auc(roc_bayes)
+
+
+cat("AUC (Frequentist):", auc_freq, "\n")
+cat("AUC (Bayesian):", auc_bayes, "\n")
+```
